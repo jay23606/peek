@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The Zero-Server Stack &mdash; GitHub Pages + Supabase</title>
-<meta name="description" content="A plain-English architecture review of the zero-server stack: how GitHub Pages + Supabase remove the web server, what it does well, where it doesn't, ten managed backends compared, and how Peek uses it in practice.">
+<meta name="description" content="A plain-English architecture review of the zero-server stack: how GitHub Pages + Supabase remove the web server, what it does well, where it doesn't, ten managed backends compared, and how Peek and Mayfly use it in practice.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%8C%3C/text%3E%3C/svg%3E">
 <style>
   /* ------- Design tokens: light is the base, dark redefines only the tokens ------- */
@@ -338,7 +338,7 @@
       <li><a href="#options">The options: ten managed backends</a></li>
       <li><a href="#cost">What it actually costs</a></li>
       <li><a href="#guide">A decision guide</a></li>
-      <li><a href="#in-practice">In practice: how Peek uses this</a></li>
+      <li><a href="#in-practice">In practice: Peek and Mayfly</a></li>
       <li><a href="#conclusion">Conclusion</a></li>
     </ol>
   </nav>
@@ -645,8 +645,8 @@
 
   <!-- 8 -->
   <section id="in-practice">
-    <h2><span class="num sans">08</span>In practice: how Peek uses this</h2>
-    <p class="kicker sans">A case study &mdash; and where it goes further</p>
+    <h2><span class="num sans">08</span>In practice: Peek and Mayfly</h2>
+    <p class="kicker sans">Two case studies &mdash; and where each pushes further</p>
     <p><strong>Peek</strong> &mdash; the app this document ships alongside &mdash; is a near-literal instance of the zero-server stack: one static page on GitHub Pages talking to a single Supabase project, with row-level security as the only gatekeeper. There is no application server and, tellingly, not even an edge function &mdash; the app holds no server-side secret, so it never needs one. It also does one thing the base pattern doesn&rsquo;t ask for, and that twist is the most interesting part.</p>
 
     <blockquote>Your full-resolution photos never touch a server.<cite>Peek README</cite></blockquote>
@@ -687,7 +687,72 @@
 
     <h3>The bill for that twist</h3>
     <p>The saving is paid for in exactly the currency the limitations named. Peer-to-peer is <strong>live-only</strong>: if the author is offline the post stays blurred, and direct messages and calls need both people present and keep no history. And with only public STUN and no TURN relay, the peer connections &ldquo;often fail on mobile cellular data&rdquo; behind carrier-grade NAT. The Supabase-backed half &mdash; feed, likes, comments, profiles, discovery &mdash; works everywhere; the peer-to-peer half is precisely where one small piece of real infrastructure (a TURN server) would be the honest fix.</p>
-    <p>That is the whole thesis in miniature: build on the zero-server default and follow it almost to the letter &mdash; no server, no edge function, not even file storage &mdash; while keeping one clearly-bounded place in view where adding a server does the single job the stack can&rsquo;t.</p>
+
+    <h3>Mayfly: the same stack, with a delivery ladder</h3>
+    <p><strong>Mayfly</strong> uses the same basic ingredients &mdash; a static PWA on GitHub Pages, Supabase Auth, Postgres, Realtime, Storage, and row-level policies &mdash; but asks a harder question: what happens when the product is <em>the message itself</em>? Its answer is not one transport but a ladder. A direct Snap prefers a browser-to-browser WebRTC transfer while both people are online; when the recipient is offline, the media is encrypted to that recipient&rsquo;s published device key before an opaque relay blob is placed in Storage. The server can route the ciphertext, but cannot render the Snap.</p>
+
+    <figure class="diagram">
+      <div class="flowlabel after sans">Mayfly &middot; two delivery paths for one Snap</div>
+      <div class="flow">
+        <div class="node">Sender browser<small>capture + local IndexedDB</small></div>
+        <div class="arrow" aria-hidden="true">&rarr;</div>
+        <div class="node wall">Realtime signal<small>Supabase Broadcast</small></div>
+        <div class="arrow" aria-hidden="true">&rarr;</div>
+        <div class="node db">Recipient browser<small>WebRTC full media</small></div>
+      </div>
+      <div class="flowlabel sans">When the recipient is offline</div>
+      <div class="flow">
+        <div class="node">Sender browser<small>encrypt to recipient key</small></div>
+        <div class="arrow" aria-hidden="true">&rarr;</div>
+        <div class="node db">Storage<small>opaque ciphertext only</small></div>
+        <div class="arrow" aria-hidden="true">&rarr;</div>
+        <div class="node">Recipient browser<small>decrypt locally</small></div>
+      </div>
+      <figcaption>Metadata and tiny blurred previews remain queryable; viewable full media takes the direct path when it can and an encrypted relay path when it cannot.</figcaption>
+    </figure>
+
+    <div class="tablecard resp">
+      <div class="tscroll">
+        <table>
+          <thead><tr><th>Pattern piece</th><th>In Mayfly</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Static frontend</th><td>Plain ES modules, no build step, and an installable PWA served by GitHub Pages.</td></tr>
+            <tr><th scope="row">The wall (RLS)</th><td><code>mf_</code>-prefixed tables keep friendship, Snap, story, message, and group membership rules in Postgres policies. The browser has a publishable key, never a service-role key.</td></tr>
+            <tr><th scope="row">Direct text</th><td>Messages are encrypted in the browser, delivered through Supabase, then removed after the recipient decrypts them. The readable conversation is device-local history.</td></tr>
+            <tr><th scope="row">Direct Snaps</th><td>Full photo/video data uses live WebRTC first; one pending offline relay can be stored as recipient-encrypted ciphertext. Untimed Snaps become local inline chat media after opening; timed Snaps remain view-once.</td></tr>
+            <tr><th scope="row">Stories</th><td>Only previews and 24-hour metadata are stored centrally. The full asset stays in the author&rsquo;s local IndexedDB and is served peer-to-peer while available.</td></tr>
+            <tr><th scope="row">Groups and calls</th><td>Group text uses private Realtime Broadcast channels. Files, voice clips, group Snaps, and calls use a live WebRTC mesh, which deliberately favors presence and privacy over offline delivery.</td></tr>
+            <tr><th scope="row">Key material</th><td>Each device creates an ECDH key pair locally. Its public key is published for relay encryption; the private key never leaves the device.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <p>That design makes the zero-server boundary more visible. A managed database is excellent at identity, authorization, notification metadata, and an encrypted mailbox. It is not a substitute for a continuously available peer: an online-only author cannot serve a live Story after closing the app, and group media cannot reach members who are not present. Those are product choices, not implementation accidents, and Mayfly makes them legible.</p>
+
+    <h3>The next additions worth making explicit</h3>
+    <p>Mayfly also supplies a practical roadmap for the point where a nearly serverless app earns a few carefully bounded helpers. None needs to become a conventional application server; each exists because it performs one job the browser and RLS layer cannot reliably perform alone.</p>
+    <div class="tablecard resp">
+      <div class="tscroll">
+        <table>
+          <thead><tr><th>Next addition</th><th>Why it earns its place</th><th>Smallest honest form</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">TURN relay</th><td>STUN-only WebRTC fails for some cellular, corporate, and symmetric-NAT connections. Without it, calls and live media are probabilistic.</td><td>A managed TURN service with short-lived credentials; it relays encrypted WebRTC traffic rather than becoming a media application server.</td></tr>
+            <tr><th scope="row">Push notifications</th><td>A browser tab is not a durable presence service. Users should learn about a message, call, or Snap even when Mayfly is closed.</td><td>Web Push plus a small trusted sender endpoint or edge function.</td></tr>
+            <tr><th scope="row">Key recovery and device migration</th><td>Device-local private keys make encrypted relay media private, but a lost browser profile also loses access to its old ciphertext.</td><td>An opt-in recovery design: a recovery key, user-approved paired device, or encrypted backup with clearly stated trade-offs.</td></tr>
+            <tr><th scope="row">Abuse controls</th><td>RLS answers <em>who may read or write</em>; it does not rate-limit spam, process reports, or keep prohibited material out of a social product.</td><td>One rate-limited report/moderation function, audit records, and a block-list policy path.</td></tr>
+            <tr><th scope="row">Lifecycle jobs</th><td>24-hour products need predictable cleanup of expired metadata, relay blobs, and device copies without relying on a particular browser to wake up.</td><td>Scheduled database jobs or a narrowly scoped cleanup function.</td></tr>
+            <tr><th scope="row">Connection observability</th><td>Peer-to-peer failures otherwise look like vague &ldquo;connecting&rdquo; states and are hard to distinguish from camera, permission, or NAT problems.</td><td>Privacy-preserving client telemetry: permission failure, ICE state, relay use, call duration, and error class &mdash; never message or media contents.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="callout warn">
+      <div class="h">The useful boundary</div>
+      <p>These additions are not a retreat from the zero-server stack. They are the discipline that makes it credible: keep identity, data, and ordinary authorization in the managed platform; add a trusted component only for connectivity, push delivery, abuse handling, recovery, scheduled cleanup, or secrets.</p>
+    </div>
+    <p>Together, the two apps make the thesis concrete. Peek follows the zero-server default almost to the letter &mdash; no server, no edge function, not even file storage. Mayfly keeps that same center of gravity while admitting an encrypted Storage fallback for offline Snaps. In both cases, the rule is the same: add a server-shaped component only where it does one clearly bounded job the browser and the wall cannot do honestly.</p>
   </section>
 
   <!-- 9 -->
@@ -701,6 +766,7 @@
       <h3>Notes &amp; sources</h3>
       <ol>
         <li>Primary source: <em>The Zero-Server Stack</em> architecture document &mdash; <a href="https://jay23606.github.io/peek/arch.html">jay23606.github.io/peek/arch.html</a>. Direct quotations and the backend comparison matrix are drawn from it.</li>
+        <li>Case-study code: <a href="https://github.com/jay23606/instamegle">Peek</a> and <a href="https://github.com/jay23606/mayfly">Mayfly</a>. Product behavior evolves; the implementation descriptions in this paper are a July 2026 snapshot.</li>
         <li>The backend comparison reflects the source&rsquo;s July 2026 snapshot. Provider free tiers, limits, and features change frequently; verify against current documentation before committing.</li>
         <li>Cost figures are illustrative order-of-magnitude ranges for a small-to-mid production application, not vendor quotes.</li>
         <li>&ldquo;Edge functions,&rdquo; &ldquo;the wall,&rdquo; and &ldquo;managed database&rdquo; are used generically; the canonical reference implementation of this pattern is Supabase (PostgreSQL + RLS) on a GitHub Pages front-end.</li>
